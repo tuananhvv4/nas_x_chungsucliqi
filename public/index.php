@@ -303,6 +303,43 @@ try {
         Support::redirect('/order?id=' . (int) ($_POST['id'] ?? 0));
     }
 
+    if ($path === '/order/cancel' && $method === 'POST') {
+        Support::verifyCsrf();
+        $orderId = (int) ($_POST['id'] ?? 0);
+        $reason = trim((string) ($_POST['cancel_reason'] ?? ''));
+        $order = Database::fetch('SELECT o.*, i.nas_base_url, i.nas_api_key FROM orders o JOIN integrations i ON i.user_id = o.user_id WHERE o.id = ? AND o.user_id = ?', [$orderId, $userId]);
+        $targetCount = $order ? (int) (Database::fetch('SELECT COUNT(*) AS total FROM target_orders WHERE order_id = ?', [$orderId])['total'] ?? 0) : 0;
+        $cancellableStatuses = ['received', 'mapping_required', 'ready', 'retry_waiting', 'manual_review', 'failed'];
+        if (!$order) {
+            Support::flash('error', 'Không tìm thấy đơn cần huỷ.');
+        } elseif (!in_array((string) $order['source_status'], ['processing', 'pending'], true)) {
+            Support::flash('error', 'Đơn này không còn ở trạng thái có thể huỷ.');
+        } elseif (!in_array((string) $order['processing_status'], $cancellableStatuses, true)) {
+            Support::flash('error', 'Đơn đang được gửi hoặc đã bắt đầu xử lý nên chưa thể huỷ an toàn.');
+        } elseif ($targetCount > 0) {
+            Support::flash('error', 'Đơn đã được gửi sang Chungsucliqi nên không thể huỷ an toàn tại đây.');
+        } else {
+            $previousStatus = (string) $order['processing_status'];
+            $claimed = Database::execute("UPDATE orders SET processing_status = 'cancelling' WHERE id = ? AND processing_status = ?", [$orderId, $previousStatus]);
+            if ($claimed !== 1) {
+                Support::flash('error', 'Trạng thái đơn vừa thay đổi. Vui lòng tải lại trang rồi kiểm tra trước khi huỷ.');
+                Support::redirect('/order?id=' . $orderId);
+            }
+            try {
+                $reason = $reason !== '' ? $reason : 'Đơn được huỷ thủ công do không thể xử lý.';
+                $result = (new NasTeleClient((string) $order['nas_base_url'], (string) $order['nas_api_key']))->updateStatus((int) $order['nas_order_id'], 'cancelled', $reason);
+                $notificationSent = $result['notificationSent'] ?? $result['data']['notificationSent'] ?? null;
+                Database::execute("UPDATE orders SET processing_status = 'cancelled', source_status = 'cancelled', source_sync_status = 'synced', notification_sent = ?, last_error = ? WHERE id = ?", [$notificationSent === null ? null : (int) (bool) $notificationSent, $notificationSent === false ? 'Đã huỷ đơn nhưng chưa gửi được thông báo cho khách.' : null, $orderId]);
+                Database::execute('INSERT INTO sync_logs (user_id, order_id, channel, level, message, context_json) VALUES (?, ?, ?, ?, ?, ?)', [$userId, $orderId, 'nas', $notificationSent === false ? 'warning' : 'info', 'Đã huỷ đơn thủ công.', Support::json(['reason' => $reason, 'notificationSent' => $notificationSent])]);
+                Support::flash($notificationSent === false ? 'error' : 'success', $notificationSent === false ? 'Đơn đã huỷ nhưng Nas Tele chưa gửi được thông báo cho khách.' : 'Đã huỷ đơn và báo kết quả về Nas Tele.');
+            } catch (Throwable $e) {
+                Database::execute('UPDATE orders SET processing_status = ? WHERE id = ? AND processing_status = ?', [$previousStatus, $orderId, 'cancelling']);
+                Support::flash('error', 'Không thể huỷ đơn: ' . Support::friendlyError($e));
+            }
+        }
+        Support::redirect('/order?id=' . $orderId);
+    }
+
     if ($path === '/logs') {
         $logs = Database::fetchAll('SELECT l.*, o.nas_order_id FROM sync_logs l LEFT JOIN orders o ON o.id=l.order_id WHERE l.user_id=? ORDER BY l.created_at DESC LIMIT 300', [$userId]);
         View::render('logs', compact('logs') + ['title' => 'Nhật ký đồng bộ']);

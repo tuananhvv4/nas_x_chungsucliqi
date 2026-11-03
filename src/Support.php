@@ -67,7 +67,7 @@ final class Support
         return [
             'received' => 'Đơn mới', 'mapping_required' => 'Chưa ghép sản phẩm', 'ready' => 'Đang chờ xử lý',
             'submitting' => 'Đang chuyển đơn', 'submitted' => 'Đã chuyển đơn', 'running' => 'Đang xử lý',
-            'processing' => 'Đang xử lý', 'completed' => 'Hoàn thành', 'cancelled' => 'Đã huỷ', 'retry_waiting' => 'Chờ thử lại',
+            'processing' => 'Đang xử lý', 'cancelling' => 'Đang huỷ', 'completed' => 'Hoàn thành', 'cancelled' => 'Đã huỷ', 'retry_waiting' => 'Chờ thử lại',
             'manual_review' => 'Cần kiểm tra', 'failed' => 'Lỗi', 'pending' => 'Chờ', 'done' => 'Hoàn thành',
         ][$status] ?? $status;
     }
