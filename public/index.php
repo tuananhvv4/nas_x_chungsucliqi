@@ -292,7 +292,10 @@ try {
         Support::verifyCsrf();
         $retryOrder = Database::fetch('SELECT * FROM orders WHERE id = ? AND user_id = ?', [(int) ($_POST['id'] ?? 0), $userId]);
         if ($retryOrder) {
-            if (in_array($retryOrder['processing_status'], ['completed', 'cancelled'], true)) {
+            if ($retryOrder['processing_status'] === 'cancelled' && $retryOrder['source_sync_status'] === 'local_only') {
+                $nextStatus = !empty($retryOrder['mapping_snapshot_json']) && !empty($retryOrder['event_codes_json']) ? 'ready' : 'received';
+                Database::execute("UPDATE orders SET processing_status = ?, source_sync_status = 'pending', retry_count = 0, next_retry_at = NULL, last_error = NULL WHERE id = ?", [$nextStatus, $retryOrder['id']]);
+            } elseif (in_array($retryOrder['processing_status'], ['completed', 'cancelled'], true)) {
                 Database::execute("UPDATE orders SET source_sync_status = 'pending', retry_count = 0, next_retry_at = NULL, last_error = NULL WHERE id = ?", [$retryOrder['id']]);
             } else {
                 $nextStatus = !empty($retryOrder['mapping_snapshot_json']) && !empty($retryOrder['event_codes_json']) ? 'ready' : 'received';
@@ -307,7 +310,7 @@ try {
         Support::verifyCsrf();
         $orderId = (int) ($_POST['id'] ?? 0);
         $reason = trim((string) ($_POST['cancel_reason'] ?? ''));
-        $order = Database::fetch('SELECT o.*, i.nas_base_url, i.nas_api_key FROM orders o JOIN integrations i ON i.user_id = o.user_id WHERE o.id = ? AND o.user_id = ?', [$orderId, $userId]);
+        $order = Database::fetch('SELECT * FROM orders WHERE id = ? AND user_id = ?', [$orderId, $userId]);
         $targetCount = $order ? (int) (Database::fetch('SELECT COUNT(*) AS total FROM target_orders WHERE order_id = ?', [$orderId])['total'] ?? 0) : 0;
         $cancellableStatuses = ['received', 'mapping_required', 'ready', 'retry_waiting', 'manual_review', 'failed'];
         if (!$order) {
@@ -325,17 +328,10 @@ try {
                 Support::flash('error', 'Trạng thái đơn vừa thay đổi. Vui lòng tải lại trang rồi kiểm tra trước khi huỷ.');
                 Support::redirect('/order?id=' . $orderId);
             }
-            try {
-                $reason = $reason !== '' ? $reason : 'Đơn được huỷ thủ công do không thể xử lý.';
-                $result = (new NasTeleClient((string) $order['nas_base_url'], (string) $order['nas_api_key']))->updateStatus((int) $order['nas_order_id'], 'cancelled', $reason);
-                $notificationSent = $result['notificationSent'] ?? $result['data']['notificationSent'] ?? null;
-                Database::execute("UPDATE orders SET processing_status = 'cancelled', source_status = 'cancelled', source_sync_status = 'synced', notification_sent = ?, last_error = ? WHERE id = ?", [$notificationSent === null ? null : (int) (bool) $notificationSent, $notificationSent === false ? 'Đã huỷ đơn nhưng chưa gửi được thông báo cho khách.' : null, $orderId]);
-                Database::execute('INSERT INTO sync_logs (user_id, order_id, channel, level, message, context_json) VALUES (?, ?, ?, ?, ?, ?)', [$userId, $orderId, 'nas', $notificationSent === false ? 'warning' : 'info', 'Đã huỷ đơn thủ công.', Support::json(['reason' => $reason, 'notificationSent' => $notificationSent])]);
-                Support::flash($notificationSent === false ? 'error' : 'success', $notificationSent === false ? 'Đơn đã huỷ nhưng Nas Tele chưa gửi được thông báo cho khách.' : 'Đã huỷ đơn và báo kết quả về Nas Tele.');
-            } catch (Throwable $e) {
-                Database::execute('UPDATE orders SET processing_status = ? WHERE id = ? AND processing_status = ?', [$previousStatus, $orderId, 'cancelling']);
-                Support::flash('error', 'Không thể huỷ đơn: ' . Support::friendlyError($e));
-            }
+            $reason = $reason !== '' ? $reason : 'Đơn được dừng thủ công do không thể xử lý.';
+            Database::execute("UPDATE orders SET processing_status = 'cancelled', source_sync_status = 'local_only', notification_sent = NULL, next_retry_at = NULL, last_error = NULL WHERE id = ? AND processing_status = 'cancelling'", [$orderId]);
+            Database::execute('INSERT INTO sync_logs (user_id, order_id, channel, level, message, context_json) VALUES (?, ?, ?, ?, ?, ?)', [$userId, $orderId, 'system', 'info', 'Đã dừng xử lý đơn tại web.', Support::json(['reason' => $reason])]);
+            Support::flash('success', 'Đã dừng xử lý đơn trên web. Trạng thái Nas Tele không thay đổi.');
         }
         Support::redirect('/order?id=' . $orderId);
     }

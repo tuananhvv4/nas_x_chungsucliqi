@@ -78,6 +78,7 @@ final class Support
             'pending' => 'Chưa gửi kết quả',
             'synced' => 'Đã gửi kết quả',
             'failed' => 'Gửi kết quả thất bại',
+            'local_only' => 'Không gửi về Nas Tele',
         ][$status ?? ''] ?? 'Chưa gửi kết quả';
     }
 
